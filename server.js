@@ -1,18 +1,11 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const multer = require('multer');
 const { google } = require('googleapis');
-const fs = require('fs');
 
 const app = express();
 app.use(cors());
-
-// Increase Multer limit to 2GB videos
-const upload = multer({
-  dest: '/tmp/',
-  limits: { fileSize: 2000 * 1024 * 1024 } 
-});
+app.use(express.json());
 
 const oauth2Client = new google.auth.OAuth2(
   process.env.YOUTUBE_CLIENT_ID,
@@ -24,63 +17,55 @@ oauth2Client.setCredentials({
   refresh_token: process.env.YOUTUBE_REFRESH_TOKEN
 });
 
-const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
-
 app.get('/', (req, res) => {
   res.send('StreamKids Upload Service is Running!');
 });
 
-app.post('/upload', upload.single('video'), async (req, res) => {
-  // Disable socket timeout on long uploads
-  req.setTimeout(0);
-
+// Endpoint to request a direct resumable upload URL from YouTube
+app.post('/get-upload-url', async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ success: false, error: 'No video file provided' });
-    }
+    const { title, description } = req.body;
+    const tokens = await oauth2Client.getAccessToken();
 
-    const filePath = req.file.path;
-    const title = req.body.title || 'StreamKids Video';
-    const description = req.body.description || 'Uploaded on StreamKids';
-
-    const response = await youtube.videos.insert({
-      part: 'snippet,status',
-      requestBody: {
+    // Ask YouTube for a resumable upload endpoint
+    const ytResponse = await fetch('https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${tokens.token}`,
+        'Content-Type': 'application/json',
+        'X-Upload-Content-Type': 'video/*'
+      },
+      body: JSON.stringify({
         snippet: {
-          title: title,
-          description: description,
+          title: title || 'StreamKids Video',
+          description: description || 'Uploaded on StreamKids',
           categoryId: '20'
         },
         status: {
           privacyStatus: 'unlisted',
           embeddable: true
         }
-      },
-      media: {
-        body: fs.createReadStream(filePath)
-      }
+      })
     });
 
-    // Cleanup temp file
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    if (!ytResponse.ok) {
+      const errText = await ytResponse.text();
+      throw new Error(`YouTube API Error: ${errText}`);
+    }
+
+    // YouTube returns the session upload location in headers
+    const locationUrl = ytResponse.headers.get('location');
 
     res.json({
       success: true,
-      videoId: response.data.id
+      uploadUrl: locationUrl
     });
 
   } catch (error) {
-    console.error('YouTube Upload Error:', error);
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
+    console.error('Error getting upload URL:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
-
-// Keep connection alive for large files
-server.timeout = 0;
-server.keepAliveTimeout = 600000;
+app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
