@@ -17,6 +17,12 @@ oauth2Client.setCredentials({
   refresh_token: process.env.YOUTUBE_REFRESH_TOKEN
 });
 
+// Initialize YouTube Data API client
+const youtube = google.youtube({
+  version: 'v3',
+  auth: oauth2Client
+});
+
 app.get('/', (req, res) => {
   res.send('StreamKids Upload Service is Running!');
 });
@@ -63,6 +69,29 @@ app.post('/get-upload-url', async (req, res) => {
 
   } catch (error) {
     console.error('Error getting upload URL:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Endpoint to fetch the latest 11-character video ID uploaded to the host channel
+app.get('/get-latest-video-id', async (req, res) => {
+  try {
+    const response = await youtube.search.list({
+      part: 'snippet',
+      forMine: true,
+      type: 'video',
+      order: 'date',
+      maxResults: 1
+    });
+
+    const items = response.data.items;
+    if (items && items.length > 0) {
+      res.json({ success: true, videoId: items[0].id.videoId });
+    } else {
+      res.status(404).json({ success: false, error: 'No video found on host channel.' });
+    }
+  } catch (error) {
+    console.error('Error fetching latest video ID:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
