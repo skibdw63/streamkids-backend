@@ -17,23 +17,16 @@ oauth2Client.setCredentials({
   refresh_token: process.env.YOUTUBE_REFRESH_TOKEN
 });
 
-// Store latest uploaded video ID in memory
-let lastUploadedVideoId = null;
-
 app.get('/', (req, res) => {
   res.send('StreamKids Upload Service is Running!');
 });
 
-// Endpoint to request a direct resumable upload URL from YouTube
+// Endpoint to request direct upload URL
 app.post('/get-upload-url', async (req, res) => {
   try {
     const { title, description } = req.body;
     const tokens = await oauth2Client.getAccessToken();
 
-    // 1. Create Video Container on YouTube first using official client
-    const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
-    
-    // Request initial resumable session directly
     const ytResponse = await fetch('https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status', {
       method: 'POST',
       headers: {
@@ -72,14 +65,41 @@ app.post('/get-upload-url', async (req, res) => {
   }
 });
 
-// Endpoint to register the Video ID sent from frontend upon complete
-app.post('/register-video-id', (req, res) => {
-  const { videoId } = req.body;
-  if (videoId) {
-    lastUploadedVideoId = videoId;
-    return res.json({ success: true, videoId });
+// Server-side endpoint to query upload status directly from YouTube
+app.post('/verify-upload', async (req, res) => {
+  try {
+    const { uploadUrl } = req.body;
+    const tokens = await oauth2Client.getAccessToken();
+
+    const statusRes = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${tokens.token}`,
+        'Content-Range': 'bytes */*'
+      }
+    });
+
+    const resText = await statusRes.text();
+    let videoId = null;
+
+    try {
+      const data = JSON.parse(resText);
+      if (data.id) videoId = data.id;
+    } catch (e) {
+      console.log("Raw status response:", resText);
+    }
+
+    if (!videoId) {
+      const urlParams = new URLSearchParams(uploadUrl.split('?')[1]);
+      videoId = urlParams.get('upload_id');
+    }
+
+    res.json({ success: true, videoId: videoId });
+
+  } catch (error) {
+    console.error('Error verifying upload:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
-  res.status(400).json({ success: false, error: 'No videoId provided' });
 });
 
 const PORT = process.env.PORT || 3000;
